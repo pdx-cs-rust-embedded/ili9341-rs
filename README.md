@@ -3,6 +3,15 @@
 > A platform agnostic driver to interface with the ILI9341 (and ILI9340C) TFT
 > LCD display
 
+## This fork
+
+This is my (Bart Massey) fork of Yuri Iozzelli's ILI9341
+display chip driver. I made some changes to make this work
+with the `microbit-v2` crate and some generalizations for
+the display I had. Thanks to Yuri for making this.
+
+The rest of this README is Yuri's.
+
 ## What works
 
 - Putting pixels on the screen

@@ -41,12 +41,57 @@ impl DisplaySize for DisplaySize320x480 {
 }
 
 /// The default orientation is Portrait
+#[derive(Debug, Clone, Copy)]
 pub enum Orientation {
     Portrait,
     PortraitFlipped,
     Landscape,
     LandscapeFlipped,
 }
+
+
+impl Orientation {
+    /// Display is in a Landscape mode.
+    pub fn is_landscape_mode(self) -> bool {
+        match self {
+            Orientation::Landscape | Orientation::LandscapeFlipped => true,
+            Orientation::Portrait | Orientation::PortraitFlipped => false,
+        }
+    }
+}
+
+
+/// Memory address control register.
+#[derive(Debug, Copy, Clone, Default)]
+pub struct Madctl(u8);
+
+macro_rules! madctl_ops {
+    ($set_name:ident, $get_name:ident, $bit:literal) => {
+        impl Madctl {
+            /// Set `MADCTL` register bit.
+            pub fn $set_name(&mut self, on: bool) -> &mut Self {
+                if on {
+                    self.0 |= 1 << $bit;
+                } else {
+                    self.0 &= !(1 << $bit);
+                }
+                self
+            }
+
+            /// Get `MADCTL` register bit.
+            pub fn $get_name(&self) -> bool {
+                    self.0 & (1 << $bit) != 0
+            }
+        }
+    };
+}
+
+madctl_ops!(set_my, get_my, 7);
+madctl_ops!(set_mx, get_mx, 6);
+madctl_ops!(set_mv, get_mv, 5);
+madctl_ops!(set_ml, get_ml, 4);
+madctl_ops!(set_bgr, get_bgr, 3);
+madctl_ops!(set_mh, get_mh, 2);
 
 /// There are two method for drawing to the screen:
 /// [Ili9341::draw_raw_iter] and [Ili9341::draw_raw_slice]
@@ -68,7 +113,7 @@ pub struct Ili9341<IFACE, RESET> {
     reset: RESET,
     width: usize,
     height: usize,
-    mode: Orientation,
+    madctl: Madctl,
 }
 
 impl<IFACE, RESET> Ili9341<IFACE, RESET>
@@ -92,7 +137,7 @@ where
             reset,
             width: SIZE::WIDTH,
             height: SIZE::HEIGHT,
-            mode: Orientation::Portrait,
+            madctl: Madctl::default(),
         };
 
         // Do hardware reset by holding reset low for at least 10us
@@ -172,9 +217,9 @@ where
         fixed_top_lines: u16,
         fixed_bottom_lines: u16,
     ) -> Result<Scroller> {
-        let height = match self.mode {
-            Orientation::Landscape | Orientation::LandscapeFlipped => self.width,
-            Orientation::Portrait | Orientation::PortraitFlipped => self.height,
+        let height = match self.get_orientation().is_landscape_mode() {
+            true => self.width,
+            false => self.height,
         } as u16;
         let scroll_lines = height as u16 - fixed_top_lines - fixed_bottom_lines;
 
@@ -243,35 +288,54 @@ where
         self.draw_raw_iter(x0, y0, x1, y1, data.iter().copied())
     }
 
+    /// Get the current display orientation.
+    pub fn get_orientation(&self) -> Orientation {
+        if self.madctl.get_mv() {
+            if self.madctl.get_mx() {
+                Orientation::LandscapeFlipped
+            } else {
+                Orientation::Landscape
+            }
+        } else {            
+            if self.madctl.get_my() {
+                Orientation::PortraitFlipped
+            } else {
+                Orientation::Portrait
+            }
+        }
+    }
+
     /// Change the orientation of the screen
     pub fn set_orientation(&mut self, mode: Orientation) -> Result {
-        let was_landscape = match self.mode {
-            Orientation::Landscape | Orientation::LandscapeFlipped => true,
-            Orientation::Portrait | Orientation::PortraitFlipped => false,
-        };
-        let is_landscape = match mode {
-            Orientation::Portrait => {
-                self.command(Command::MemoryAccessControl, &[0x40 | 0x08])?;
-                false
-            }
-            Orientation::Landscape => {
-                self.command(Command::MemoryAccessControl, &[0x20 | 0x08])?;
-                true
-            }
-            Orientation::PortraitFlipped => {
-                self.command(Command::MemoryAccessControl, &[0x80 | 0x08])?;
-                false
-            }
-            Orientation::LandscapeFlipped => {
-                self.command(Command::MemoryAccessControl, &[0x40 | 0x80 | 0x20 | 0x08])?;
-                true
-            }
-        };
+        let old_mode = self.get_orientation();
+
+        let was_landscape = old_mode.is_landscape_mode();
+        let is_landscape = mode.is_landscape_mode();
         if was_landscape ^ is_landscape {
             core::mem::swap(&mut self.height, &mut self.width);
         }
-        self.mode = mode;
-        Ok(())
+
+        match mode {
+            Orientation::Portrait => {
+                self.set_madctl(|m| m.set_mx(false))
+            }
+            Orientation::Landscape => {
+                self.set_madctl(|m| m.set_mv(true).set_my(false))
+            }
+            Orientation::PortraitFlipped => {
+                self.set_madctl(|m| m.set_mx(true))
+            }
+            Orientation::LandscapeFlipped => {
+                self.set_madctl(|m| m.set_mv(true).set_my(true))
+            }
+        }
+    }
+
+    pub fn set_madctl<M>(&mut self, settings: M) -> Result
+        where M: FnOnce(&mut Madctl) -> &mut Madctl
+    {
+        let _ = settings(&mut self.madctl);
+        self.command(Command::MemoryAccessControl, &[self.madctl.0])
     }
 }
 
